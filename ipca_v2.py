@@ -80,6 +80,15 @@ def topic_loss_toy(topic_prob_n, topic_vector_n, n_concept, f_input, loss1, para
             )
   return loss
 
+def topic_loss_MNIST(topic_prob_n, topic_vector_n, n_concept, f_input, loss1, para = 1.0):
+  """creates loss for topic model"""
+  def loss(y_true, y_pred):
+    return (1.0*tf.reduce_mean(input_tensor=loss1(y_true, y_pred))\
+            - 0.1*tf.reduce_mean(input_tensor=(tf.nn.top_k(K.transpose(K.reshape(topic_prob_n,(-1,n_concept))),k=32,sorted=True).values))
+            + 0.1*tf.reduce_mean(input_tensor=(K.dot(K.transpose(topic_vector_n), topic_vector_n) - np.eye(n_concept)))
+            )
+  return loss
+
 def topic_loss_nlp(topic_prob_n, topic_vector_n, n_concept, f_input, loss1, para = 1.0):
   """creates loss with regularization (for NLP)"""
   def loss(y_true, y_pred):
@@ -514,6 +523,61 @@ def topic_model_new_toy(predict,
   if load:
     topic_model_pr.load_weights(load)
   return topic_model_pr, optimizer_reset, optimizer, topic_vector_n,  n_concept, f_input
+
+def topic_model_new_MNIST(predict,
+           f_train,
+           y_train,
+           f_val,
+           y_val,
+           n_concept,
+           verbose=False,
+           metric1=['accuracy'],
+           opt='adam',
+           loss1=tf.nn.softmax_cross_entropy_with_logits,
+           thres=0.0,
+           load=False,
+           para = 0.5):
+	"""Returns main function of topic model."""
+
+
+	f_input = Input(shape=(f_train.shape[1],f_train.shape[2],f_train.shape[3]), name='f_input')
+	f_input_n =  Lambda(lambda x:K.l2_normalize(x,axis=(3)))(f_input)
+
+	topic_vector = Weight((f_train.shape[3], n_concept))(f_input)
+	topic_vector_n = Lambda(lambda x: K.l2_normalize(x, axis=0))(topic_vector)
+	topic_prob = Lambda(lambda x:K.dot(x[0],x[1]))([f_input, topic_vector_n])
+	topic_prob_n = Lambda(lambda x:K.dot(x[0],x[1]))([f_input_n, topic_vector_n])
+	topic_prob_mask = Lambda(lambda x:K.cast(K.greater(x,thres),'float32'))(topic_prob_n)
+	topic_prob_am = Lambda(lambda x:x[0]*x[1])([topic_prob,topic_prob_mask])
+	topic_prob_sum = Lambda(lambda x: K.sum(x, axis=3, keepdims=True)+1e-3)(topic_prob_am)
+	topic_prob_nn = Lambda(lambda x: x[0]/x[1])([topic_prob_am, topic_prob_sum])
+
+	rec_vector_1 = Weight((n_concept, 500))(f_input)
+	rec_vector_2 = Weight((500, f_train.shape[3]))(f_input)
+	rec_layer_1 = Lambda(lambda x:K.relu(K.dot(x[0],x[1])))([topic_prob_nn, rec_vector_1])
+	rec_layer_2 = Lambda(lambda x:K.dot(x[0],x[1]))([rec_layer_1, rec_vector_2])
+	pred = predict(rec_layer_2)
+	topic_model_pr = Model(inputs=f_input, outputs=pred)
+	topic_model_pr.layers[-1].trainable = False
+	if opt =='sgd':
+		optimizer = SGD(lr=0.001)
+		optimizer_state = [optimizer.iterations, optimizer.lr,
+		      optimizer.momentum, optimizer.decay]
+		optimizer_reset = tf.compat.v1.variables_initializer(optimizer_state)
+	elif opt =='adam':
+		optimizer = Adam(lr=0.001)
+		optimizer_state = [optimizer.iterations, optimizer.lr, optimizer.beta_1,
+		                         optimizer.beta_2, optimizer.decay]
+		optimizer_reset = tf.compat.v1.variables_initializer(optimizer_state)
+
+	metric1.append(mean_sim(topic_prob_n, n_concept))
+	topic_model_pr.compile(
+	  loss=topic_loss_MNIST(topic_prob_n, topic_vector_n,  n_concept, f_input, loss1=loss1, para = para),
+	  optimizer=optimizer,metrics=metric1)
+	print(topic_model_pr.summary())
+	if load:
+		topic_model_pr.load_weights(load)
+	return topic_model_pr, optimizer_reset, optimizer, topic_vector_n,  n_concept, f_input
 
 def get_acc(binary_sample, f_val, y_val_logit, shap_model, verbose=False):
   """Returns accuracy."""

@@ -1,11 +1,11 @@
 import os
-from tensorflow import keras
-from tensorflow.keras  import backend as K
-from tensorflow.keras.layers import Conv2D, Dense, Flatten, Input, Lambda, MaxPooling2D, Dropout, Layer
-from tensorflow.keras.models import Model
+import keras
+import keras.backend as K
+from keras.layers import Conv2D, Dense, Flatten, Input, Lambda, MaxPooling2D, Dropout, Layer
+from keras.models import Model
 import pandas as pd
 import numpy as np
-from tensorflow.keras.optimizers import Adam,SGD
+from keras.optimizers import Adam,SGD
 from sklearn.decomposition import PCA
 from sklearn.decomposition import TruncatedSVD
 from sklearn.utils.extmath import randomized_svd
@@ -14,19 +14,8 @@ from sklearn.linear_model import LogisticRegression
 import tensorflow as tf
 import matplotlib.pyplot as plt
 import pickle
-import gc 
-import argparse
 
-import tensorflow_datasets as tfds
-tf.compat.v1.disable_eager_execution()
-
-parser = argparse.ArgumentParser()
-parser.add_argument('-gpuid', nargs=1, type=str, default='0') # python3 main.py -gpuid=0,1,2,3
-parser.add_argument('-seedL', nargs=1, type=int, default='0') # python3 main.py -gpuid=0,1,2,3
-parser.add_argument('-seedH', nargs=1, type=int, default='30') # python3 main.py -gpuid=0,1,2,3
-args = parser.parse_args()
-os.environ['CUDA_VISIBLE_DEVICES'] = args.gpuid[0]
-print(os.environ['CUDA_VISIBLE_DEVICES'])
+tf.config.experimental_run_functions_eagerly(True)
 
 def makedir(path):
     '''
@@ -36,7 +25,7 @@ def makedir(path):
         os.makedirs(path)
 init = keras.initializers.RandomUniform(minval=-0.5, maxval=0.5, seed=None)
 
-def create_org_model(dataset, width=28, 
+def create_org_model(x_train, y_train, width=28, 
                        height=28, channel=1, verbose=True,epochs=10):
     """Train a base model"""
     input1 = Input(
@@ -77,7 +66,7 @@ def create_org_model(dataset, width=28,
       metrics=['accuracy'])
 
 
-    mlp.fit(dataset, epochs=epochs,verbose=verbose)
+    mlp.fit(x_train, y_train, epochs=epochs,verbose=verbose)
     mlp.save_weights(model_dir+'complete_model.h5')
 
     for layer in mlp.layers:
@@ -95,10 +84,10 @@ def new_training_set(seed,percentage):
     ds_train = ds_train.map(
         normalize_img, num_parallel_calls=tf.data.experimental.AUTOTUNE)
     ds_train = ds_train.cache()
-    ds_train = ds_train.shuffle(len(x_train))
+    ds_train = ds_train.shuffle(ds_info.splits['train'].num_examples)
     ds_train = ds_train.batch(128)
     ds_train = ds_train.prefetch(tf.data.experimental.AUTOTUNE)
-    return ds_train, indices
+    return ds_train, y_train[indices]
 
 class Weight(Layer):
     """Simple Weight class."""
@@ -191,10 +180,10 @@ def normalize_img(image, label):
   return tf.cast(image, tf.float32) / 255., label
 
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   # see issue #152
-#os.environ["CUDA_VISIBLE_DEVICES"]="0"
+os.environ["CUDA_VISIBLE_DEVICES"]="1"
 
 
-base_architecture = 'new_MNIST_base'
+base_architecture = 'MNIST_base'
 percentage = 0.7
 verbose = 2
 n_concept = 10
@@ -213,62 +202,61 @@ x_train = x_train.values.reshape(-1,28,28,1)
 x_test = test.drop(labels = ["label"],axis = 1) 
 x_test = x_test.values.reshape(-1,28,28,1)
 
-for experiment_run in range(args.seedL[0],args.seedH[0]):
-  seed = int(experiment_run)
-  experiment_run = str(experiment_run)
-  model_dir = './saved_models/' + base_architecture + '/' + experiment_run + '/'
-  makedir(model_dir)
-  ds_train_small, ind = new_training_set(seed,percentage)
-  feature_model, predict_model, model = create_org_model(ds_train_small,  verbose=verbose, epochs=org_epochs)
+for experiment_run in range(1739,2000):
+	seed = int(experiment_run)
+	experiment_run = str(experiment_run)
+	model_dir = './saved_models/' + base_architecture + '/' + experiment_run + '/'
+	makedir(model_dir)
+	indices = np.random.choice(len(x_train), size=int(percentage*len(x_train)), replace=False)
+	x_train_small = x_train[indices]
+	y_train_small = y_train[indices]
+	feature_model, predict_model, model = create_org_model(x_train_small, y_train_small ,  verbose=verbose, epochs=org_epochs)
 
-  train_predict = model.predict(x_train.astype('float32')).argmax(axis=1)
-  test_predict = model.predict(x_test.astype('float32')).argmax(axis=1)
-  pickle.dump(train_predict, open(model_dir+"full_train_{}.pkl".format(seed),"wb"))
-  pickle.dump(test_predict, open(model_dir+"full_test_{}.pkl".format(seed),"wb"))
+	train_predict = model.predict(x_train.astype('float32')).argmax(axis=1)
+	test_predict = model.predict(x_test.astype('float32')).argmax(axis=1)
+	pickle.dump(train_predict, open(model_dir+"full_train_{}.pkl".format(seed),"wb"))
+	pickle.dump(test_predict, open(model_dir+"full_test_{}.pkl".format(seed),"wb"))
 
-  f_train = feature_model.predict(x_train[ind])
+	f_train = feature_model.predict(x_train_small)
 
-  topic_model_pr, optimizer_reset, optimizer, topic_vector,  n_concept, f_input = topic_model_new_MNIST(predict_model,
-  																		                                f_train,
-  																		                                y_train[ind],
-  																		                                n_concept,
-  																		                                verbose=verbose,
-  																		                                metric1=['accuracy'],
-  																		                                loss1=tf.keras.losses.sparse_categorical_crossentropy,
-  																		                                thres=0.2,
-  																		                                load=False)
-  topic_model_pr.fit(f_train,y_train[ind],batch_size=batch_size,epochs=topic_epochs, verbose=verbose)
+	topic_model_pr, optimizer_reset, optimizer, topic_vector,  n_concept, f_input = topic_model_new_MNIST(predict_model,
+																			                                f_train,
+																			                                y_train,
+																			                                n_concept,
+																			                                verbose=verbose,
+																			                                metric1=['accuracy'],
+																			                                loss1=tf.keras.losses.sparse_categorical_crossentropy,
+																			                                thres=0.2,
+																			                                load=False)
+	topic_model_pr.fit(f_train,y_train_small,batch_size=batch_size,epochs=topic_epochs, verbose=verbose)
 
-  f_train_full = feature_model.predict(x_train)
-  f_test_full = feature_model.predict(x_test)
-  train_predict_con = topic_model_pr.predict(f_train_full).argmax(axis=1)
-  test_predict_con = topic_model_pr.predict(f_test_full).argmax(axis=1)
+	f_train_full = feature_model.predict(x_train)
+	f_test_full = feature_model.predict(x_test)
+	train_predict_con = topic_model_pr.predict(f_train_full).argmax(axis=1)
+	test_predict_con = topic_model_pr.predict(f_test_full).argmax(axis=1)
 
-  pickle.dump(train_predict_con, open(model_dir+"con_train_{}.pkl".format(seed),"wb"))
-  pickle.dump(test_predict_con, open(model_dir+"con_test_{}.pkl".format(seed),"wb"))
+	pickle.dump(train_predict_con, open(model_dir+"con_train_{}.pkl".format(seed),"wb"))
+	pickle.dump(test_predict_con, open(model_dir+"con_test_{}.pkl".format(seed),"wb"))
 
-  topic_model_pr.save_weights(model_dir+'latest_topic_MNIST.h5')
+	topic_model_pr.save_weights(model_dir+'latest_topic_MNIST.h5')
 
-  topic_vec = topic_model_pr.layers[1].get_weights()[0]
-  recov_vec = topic_model_pr.layers[-3].get_weights()[0]
-  topic_vec_n = topic_vec/(np.linalg.norm(topic_vec,axis=0,keepdims=True)+1e-9)
+	topic_vec = topic_model_pr.layers[1].get_weights()[0]
+	recov_vec = topic_model_pr.layers[-3].get_weights()[0]
+	topic_vec_n = topic_vec/(np.linalg.norm(topic_vec,axis=0,keepdims=True)+1e-9)
 
-  f_train_n = f_train/(np.linalg.norm(f_train,axis=3,keepdims=True)+1e-9)
-  topic_vec_n = topic_vec/(np.linalg.norm(topic_vec,axis=0,keepdims=True)+1e-9)
-  topic_prob = np.matmul(f_train_n,topic_vec_n)
-  n_size = 7
-  j_int, a, b = {},{},{}
-  for i in range(n_concept):
-      j_int[i], a[i], b[i] = [], [], []
-      ind = np.argpartition(topic_prob[:,:,:,i].flatten(), -10)[-10:]
-      sim_list = topic_prob[:,:,:,i].flatten()[ind]
-      for jc,j in enumerate(ind):
-          j_int[i].append(int(np.floor(j/(n_size*n_size))))
-          a[i].append(int((j-j_int[i][-1]*(n_size*n_size))/n_size))
-          b[i].append(int((j-j_int[i][-1]*(n_size*n_size))%n_size))
-  pickle.dump(a, open(model_dir+"a_{}.pkl".format(seed),"wb"))
-  pickle.dump(b, open(model_dir+"b_{}.pkl".format(seed),"wb"))
-  pickle.dump(j_int, open(model_dir+"j_int_{}.pkl".format(seed),"wb"))
-  collected = gc.collect()
-  print("Garbage collector: collected", "%d objects." % collected) 
-
+	f_train_n = f_train/(np.linalg.norm(f_train,axis=3,keepdims=True)+1e-9)
+	topic_vec_n = topic_vec/(np.linalg.norm(topic_vec,axis=0,keepdims=True)+1e-9)
+	topic_prob = np.matmul(f_train_n,topic_vec_n)
+	n_size = 7
+	j_int, a, b = {},{},{}
+	for i in range(n_concept):
+	    j_int[i], a[i], b[i] = [], [], []
+	    ind = np.argpartition(topic_prob[:,:,:,i].flatten(), -10)[-10:]
+	    sim_list = topic_prob[:,:,:,i].flatten()[ind]
+	    for jc,j in enumerate(ind):
+	        j_int[i].append(int(np.floor(j/(n_size*n_size))))
+	        a[i].append(int((j-j_int[i][-1]*(n_size*n_size))/n_size))
+	        b[i].append(int((j-j_int[i][-1]*(n_size*n_size))%n_size))
+	pickle.dump(a, open(model_dir+"a_{}.pkl".format(seed),"wb"))
+	pickle.dump(b, open(model_dir+"b_{}.pkl".format(seed),"wb"))
+	pickle.dump(j_int, open(model_dir+"j_int_{}.pkl".format(seed),"wb"))

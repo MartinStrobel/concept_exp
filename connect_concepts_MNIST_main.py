@@ -20,6 +20,7 @@ import argparse
 import tensorflow_datasets as tfds
 tf.compat.v1.disable_eager_execution()
 
+init = keras.initializers.RandomUniform(minval=-0.5, maxval=0.5, seed=None)
 parser = argparse.ArgumentParser()
 parser.add_argument('-gpuid', nargs=1, type=str, default='0') # python3 main.py -gpuid=0,1,2,3
 parser.add_argument('-seedL', nargs=1, type=int, default='0') # python3 main.py -gpuid=0,1,2,3
@@ -28,15 +29,7 @@ args = parser.parse_args()
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpuid[0]
 print(os.environ['CUDA_VISIBLE_DEVICES'])
 
-def makedir(path):
-    '''
-    if path does not exist in the file system, create it
-    '''
-    if not os.path.exists(path):
-        os.makedirs(path)
-init = keras.initializers.RandomUniform(minval=-0.5, maxval=0.5, seed=None)
-
-def create_org_model(dataset, width=28, 
+def create_org_model( width=28, 
                        height=28, channel=1, verbose=True,epochs=10):
     """Train a base model"""
     input1 = Input(
@@ -77,8 +70,7 @@ def create_org_model(dataset, width=28,
       metrics=['accuracy'])
 
 
-    mlp.fit(dataset, epochs=epochs,verbose=verbose)
-    mlp.save_weights(model_dir+'complete_model.h5')
+    mlp.load_weights(model_dir+'complete_model.h5')
 
     for layer in mlp.layers:
         layer.trainable = False
@@ -173,7 +165,7 @@ def topic_model_new_MNIST(predict,
       optimizer=optimizer,metrics=metric1)
     print(topic_model_pr.summary())
     if load:
-        topic_model_pr.load_weights(load)
+        topic_model_pr.load_weights(model_dir+'latest_topic_MNIST.h5')
     return topic_model_pr, optimizer_reset, optimizer, topic_vector_n,  n_concept, f_input
 
 
@@ -194,13 +186,16 @@ os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   # see issue #152
 #os.environ["CUDA_VISIBLE_DEVICES"]="0"
 
 
+
+
+
 base_architecture = 'new_MNIST_base'
-percentage = 0.7
 verbose = 2
 n_concept = 10
 batch_size = 128
 org_epochs = 10
 topic_epochs = 10
+threshold = 0.2
 
 train = pd.read_csv("../data/MNIST/mnist_train.csv")
 test = pd.read_csv("../data/MNIST/mnist_test.csv")
@@ -214,61 +209,37 @@ x_test = test.drop(labels = ["label"],axis = 1)
 x_test = x_test.values.reshape(-1,28,28,1)
 
 for experiment_run in range(args.seedL[0],args.seedH[0]):
-  seed = int(experiment_run)
-  experiment_run = str(experiment_run)
-  model_dir = './saved_models/' + base_architecture + '/' + experiment_run + '/'
-  makedir(model_dir)
-  ds_train_small, ind = new_training_set(seed,percentage)
-  feature_model, predict_model, model = create_org_model(ds_train_small,  verbose=verbose, epochs=org_epochs)
+	seed = int(experiment_run)
+	experiment_run = str(experiment_run)
+	model_dir = './saved_models/' + base_architecture + '/' + experiment_run + '/'
+	feature_model, predict_model, model = create_org_model(verbose=verbose, epochs=org_epochs)
 
-  train_predict = model.predict(x_train.astype('float32')).argmax(axis=1)
-  test_predict = model.predict(x_test.astype('float32')).argmax(axis=1)
-  pickle.dump(train_predict, open(model_dir+"full_train_{}.pkl".format(seed),"wb"))
-  pickle.dump(test_predict, open(model_dir+"full_test_{}.pkl".format(seed),"wb"))
 
-  f_train = feature_model.predict(x_train[ind])
+	f_train_full = feature_model.predict(x_train)
+	f_test_full = feature_model.predict(x_test)
 
-  topic_model_pr, optimizer_reset, optimizer, topic_vector,  n_concept, f_input = topic_model_new_MNIST(predict_model,
-  																		                                f_train,
-  																		                                y_train[ind],
-  																		                                n_concept,
-  																		                                verbose=verbose,
-  																		                                metric1=['accuracy'],
-  																		                                loss1=tf.keras.losses.sparse_categorical_crossentropy,
-  																		                                thres=0.2,
-  																		                                load=False)
-  topic_model_pr.fit(f_train,y_train[ind],batch_size=batch_size,epochs=topic_epochs, verbose=verbose)
+	topic_model_pr, optimizer_reset, optimizer, topic_vector,  n_concept, f_input = topic_model_new_MNIST(predict_model,
+	                                                                                                    f_train_full,
+	                                                                                                    y_train,
+	                                                                                                    n_concept,
+	                                                                                                    verbose=verbose,
+	                                                                                                    metric1=['accuracy'],
+	                                                                                                    loss1=tf.keras.losses.sparse_categorical_crossentropy,
+	                                                                                                    thres=threshold,
+	                                                                                                    load=True)
 
-  f_train_full = feature_model.predict(x_train)
-  f_test_full = feature_model.predict(x_test)
-  train_predict_con = topic_model_pr.predict(f_train_full).argmax(axis=1)
-  test_predict_con = topic_model_pr.predict(f_test_full).argmax(axis=1)
+	#f_train_full = feature_model.predict(x_train)
+	#f_test_full = feature_model.predict(x_test)
+	train_predict_con = topic_model_pr.predict(f_train_full).argmax(axis=1)
+	test_predict_con = topic_model_pr.predict(f_test_full).argmax(axis=1)
 
-  pickle.dump(train_predict_con, open(model_dir+"con_train_{}.pkl".format(seed),"wb"))
-  pickle.dump(test_predict_con, open(model_dir+"con_test_{}.pkl".format(seed),"wb"))
 
-  topic_model_pr.save_weights(model_dir+'latest_topic_MNIST.h5')
 
-  topic_vec = topic_model_pr.layers[1].get_weights()[0]
-  recov_vec = topic_model_pr.layers[-3].get_weights()[0]
-  topic_vec_n = topic_vec/(np.linalg.norm(topic_vec,axis=0,keepdims=True)+1e-9)
+	topic_vec = topic_model_pr.layers[1].get_weights()[0]
+	recov_vec = topic_model_pr.layers[-3].get_weights()[0]
+	topic_vec_n = topic_vec/(np.linalg.norm(topic_vec,axis=0,keepdims=True)+1e-9)
 
-  f_train_n = f_train/(np.linalg.norm(f_train,axis=3,keepdims=True)+1e-9)
-  topic_vec_n = topic_vec/(np.linalg.norm(topic_vec,axis=0,keepdims=True)+1e-9)
-  topic_prob = np.matmul(f_train_n,topic_vec_n)
-  n_size = 7
-  j_int, a, b = {},{},{}
-  for i in range(n_concept):
-      j_int[i], a[i], b[i] = [], [], []
-      ind = np.argpartition(topic_prob[:,:,:,i].flatten(), -10)[-10:]
-      sim_list = topic_prob[:,:,:,i].flatten()[ind]
-      for jc,j in enumerate(ind):
-          j_int[i].append(int(np.floor(j/(n_size*n_size))))
-          a[i].append(int((j-j_int[i][-1]*(n_size*n_size))/n_size))
-          b[i].append(int((j-j_int[i][-1]*(n_size*n_size))%n_size))
-  pickle.dump(a, open(model_dir+"a_{}.pkl".format(seed),"wb"))
-  pickle.dump(b, open(model_dir+"b_{}.pkl".format(seed),"wb"))
-  pickle.dump(j_int, open(model_dir+"j_int_{}.pkl".format(seed),"wb"))
-  collected = gc.collect()
-  print("Garbage collector: collected", "%d objects." % collected) 
-
+	f_train_n = f_train_full/(np.linalg.norm(f_train_full,axis=3,keepdims=True)+1e-9)
+	topic_vec_n = topic_vec/(np.linalg.norm(topic_vec,axis=0,keepdims=True)+1e-9)
+	topic_prob = np.matmul(f_train_n,topic_vec_n)
+	pickle.dump(topic_prob, open(model_dir+"topic_prob_{}.pkl".format(seed),"wb"))
