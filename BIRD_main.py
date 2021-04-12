@@ -26,8 +26,7 @@ tf.compat.v1.disable_eager_execution()
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-gpuid', nargs=1, type=str, default='0') # python3 main.py -gpuid=0,1,2,3
-parser.add_argument('-seedL', nargs=1, type=int, default='0') # python3 main.py -gpuid=0,1,2,3
-parser.add_argument('-seedH', nargs=1, type=int, default='30') # python3 main.py -gpuid=0,1,2,3
+parser.add_argument('-seed', nargs=1, type=int, default='0') # python3 main.py -gpuid=0,1,2,3
 args = parser.parse_args()
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpuid[0]
 print(os.environ['CUDA_VISIBLE_DEVICES'])
@@ -40,7 +39,7 @@ def makedir(path):
         os.makedirs(path)
 init = keras.initializers.RandomUniform(minval=-0.5, maxval=0.5, seed=None)
 
-def create_org_model(train_generator, val_generator, input_shape=(224, 224, 3),  verbose=True):
+def create_org_model(train_generator, val_generator, input_shape=(224, 224, 3),  verbose=True, epochs=10):
     """Loads pretrain model or train one."""
     convlayers = ResNet34(input_shape=input_shape, input_tensor=None, weights='imagenet', include_top=False)
     dense1 = Dense(200,activation='softmax')
@@ -55,7 +54,8 @@ def create_org_model(train_generator, val_generator, input_shape=(224, 224, 3), 
     model.compile(loss='sparse_categorical_crossentropy',metrics=['accuracy'],optimizer=opt)
     
     history=model.fit_generator(train_generator,validation_data=val_generator,
-         epochs=10, verbose=verbose)
+         epochs=epochs, verbose=verbose)
+    model.save_weights(model_dir+'complete_model.h5')
     
     for layer in model.layers:
         layer.trainable = False
@@ -154,9 +154,9 @@ def topic_model_new_BIRD(predict,
         optimizer_reset = tf.compat.v1.variables_initializer(optimizer_state)
     metric1.append(mean_sim(topic_prob_n, n_concept))
     topic_model_pr.compile(
-      loss=topic_loss_MNIST(topic_prob_n, topic_vector_n,  n_concept, f_input, loss1=loss1),
+      loss=topic_loss_BIRD(topic_prob_n, topic_vector_n,  n_concept, f_input, loss1=loss1),
       optimizer=optimizer,metrics=metric1)
-    print(topic_model_pr.summary())
+    #print(topic_model_pr.summary())
     if load:
         topic_model_pr.load_weights(load)
     return topic_model_pr, optimizer_reset, optimizer, topic_vector_n,  n_concept, f_input
@@ -176,12 +176,12 @@ os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   # see issue #152
 #os.environ["CUDA_VISIBLE_DEVICES"]="0"
 
 
-base_architecture = 'BIRD_base'
+base_architecture = 'BIRD_3ep_100cons'
 percentage = 0.7
-verbose = 2
-n_concept = 10
+verbose = 0
+n_concept = 100
 batch_size = 128
-org_epochs = 1
+org_epochs = 3
 topic_epochs = 10
 
 train_directory='../data/cup_200_cropped/train_cropped_augmented2'
@@ -189,6 +189,8 @@ org_train_directory='../data/cup_200_cropped/train_cropped'
 test_directory='../data/cup_200_cropped/test_cropped'
 
 train_datagen=ImageDataGenerator(rescale=1/255)
+org_train_datagen=ImageDataGenerator(rescale=1/255)
+test_datagen=ImageDataGenerator(rescale=1/255)
 
 # Create the dataframe to sample from the augmented dataset
 filenames = []
@@ -211,8 +213,8 @@ for foldername in sorted(folders):
 org_df = pd.DataFrame(filenames ,columns=["x_col"])
 org_df["y_col"] = org_df["x_col"].map(lambda x: x.split(".")[0])
 
-org_train_generator =train_datagen.flow_from_dataframe(dataframe=org_df,
-    directory=train_directory,
+org_train_generator =org_train_datagen.flow_from_dataframe(dataframe=org_df,
+    directory=org_train_directory,
     x_col="x_col",
     y_col="y_col",
     target_size=(224,224),
@@ -231,8 +233,9 @@ for foldername in sorted(folders):
 test_df = pd.DataFrame(filenames ,columns=["x_col"])
 test_df["y_col"] = test_df["x_col"].map(lambda x: x.split(".")[0])
 
-test_generator =train_datagen.flow_from_dataframe(dataframe=test_df,
-    directory=train_directory,
+
+test_generator =test_datagen.flow_from_dataframe(dataframe=test_df,
+    directory=test_directory,
     x_col="x_col",
     y_col="y_col",
     target_size=(224,224),
@@ -240,77 +243,75 @@ test_generator =train_datagen.flow_from_dataframe(dataframe=test_df,
     shuffle=False,
     class_mode='sparse',batch_size=batch_size,
 )
+experiment_run = args.seed[0]
+seed = int(experiment_run)
+experiment_run = str(experiment_run) 
+model_dir = './saved_models/' + base_architecture + '/' + experiment_run + '/'
+makedir(model_dir)
+train_datagen=ImageDataGenerator(rescale=1/255)
+train_generator, indices = new_train_generator(seed,percentage,df,org_datasetsize=len(org_df),repetition=30)
+feature_model, predict_model, model = create_org_model(train_generator,test_generator, epochs=org_epochs)
 
-for experiment_run in range(args.seedL[0],args.seedH[0]):
-  seed = int(experiment_run)
-  experiment_run = str(experiment_run)
-  model_dir = './saved_models/' + base_architecture + '/' + experiment_run + '/'
-  makedir(model_dir)
-  train_generator, indices = new_train_generator(seed,percentage,df,org_datasetsize=len(org_df),repetition=30)
-  feature_model, predict_model, model = create_org_model(train_generator,val_generator)
+train_predict = model.predict(org_train_generator).argmax(axis=1)
+test_predict = model.predict(test_generator).argmax(axis=1)
+pickle.dump(train_predict, open(model_dir+"full_train_{}.pkl".format(seed),"wb"))
+pickle.dump(test_predict, open(model_dir+"full_test_{}.pkl".format(seed),"wb"))
 
-  train_predict = model.predict(org_train_generator).argmax(axis=1)
-  test_predict = model.predict(test_generator).argmax(axis=1)
-  pickle.dump(train_predict, open(model_dir+"full_train_{}.pkl".format(seed),"wb"))
-  pickle.dump(test_predict, open(model_dir+"full_test_{}.pkl".format(seed),"wb"))
+batches = 0 
+f_train = []
+f_train_y = []
+for x_batch, y_batch in train_generator:
+  f_train_batch = feature_model.predict(x_batch)
+  f_train.append(f_train_batch)
+  f_train_y.append(y_batch)
+  batches += 1
+  #print(batches, end=', ')
+  if batches >= len(train_generator):
+      # we need to break the loop by hand because
+      # the generator loops indefinitely
+      break
+f_train = np.concatenate(f_train)
+f_train_y = np.concatenate(f_train_y)
 
-  batches = 0 
-  f_train = []
-  f_train_y = []
-  for x_batch, y_batch in train_generator:
-    f_train_batch = feature_model.predict(x_batch)
-    f_train.append(f_train_batch)
-    f_train_y.append(y_batch)
-    batches += 1
-    print(batches, end=', ')
-    if batches >= len(train_generator):
-        # we need to break the loop by hand because
-        # the generator loops indefinitely
-        break
-  f_train = np.concatenate(f_train)
-  f_train_y = np.concatenate(f_train_y)
+topic_model_pr, optimizer_reset, optimizer, topic_vector,  n_concept, f_input = topic_model_new_BIRD(predict_model,
+																		                                f_train,
+																		                                f_train_y,
+																		                                n_concept,
+																		                                verbose=verbose,
+																		                                metric1=['accuracy'],
+																		                                loss1=tf.keras.losses.sparse_categorical_crossentropy,
+																		                                thres=0.2,
+																		                                load=False)
+topic_model_pr.fit(f_train,f_train_y,batch_size=batch_size,epochs=topic_epochs, verbose=verbose)
 
-  topic_model_pr, optimizer_reset, optimizer, topic_vector,  n_concept, f_input = topic_model_new_BIRD(predict_model,
-  																		                                f_train,
-  																		                                f_train_y,
-  																		                                n_concept,
-  																		                                verbose=verbose,
-  																		                                metric1=['accuracy'],
-  																		                                loss1=tf.keras.losses.sparse_categorical_crossentropy,
-  																		                                thres=0.2,
-  																		                                load=False)
-  topic_model_pr.fit(f_train,f_train_y,batch_size=batch_size,epochs=topic_epochs, verbose=verbose)
+f_train_full = feature_model.predict(org_train_generator)
+f_test_full = feature_model.predict(test_generator)
+train_predict_con = topic_model_pr.predict(f_train_full).argmax(axis=1)
+test_predict_con = topic_model_pr.predict(f_test_full).argmax(axis=1)
 
-  f_train_full = feature_model.predict(org_train_generator)
-  f_test_full = feature_model.predict(test_generator)
-  train_predict_con = topic_model_pr.predict(f_train_full).argmax(axis=1)
-  test_predict_con = topic_model_pr.predict(f_test_full).argmax(axis=1)
+pickle.dump(train_predict_con, open(model_dir+"con_train_{}.pkl".format(seed),"wb"))
+pickle.dump(test_predict_con, open(model_dir+"con_test_{}.pkl".format(seed),"wb"))
 
-  pickle.dump(train_predict_con, open(model_dir+"con_train_{}.pkl".format(seed),"wb"))
-  pickle.dump(test_predict_con, open(model_dir+"con_test_{}.pkl".format(seed),"wb"))
+topic_model_pr.save_weights(model_dir+'latest_topic_BIRD.h5')
 
-  topic_model_pr.save_weights(model_dir+'latest_topic_BIRD.h5')
+topic_vec = topic_model_pr.layers[1].get_weights()[0]
+recov_vec = topic_model_pr.layers[-3].get_weights()[0]
+topic_vec_n = topic_vec/(np.linalg.norm(topic_vec,axis=0,keepdims=True)+1e-9)
 
-  topic_vec = topic_model_pr.layers[1].get_weights()[0]
-  recov_vec = topic_model_pr.layers[-3].get_weights()[0]
-  topic_vec_n = topic_vec/(np.linalg.norm(topic_vec,axis=0,keepdims=True)+1e-9)
-
-  f_train_n = f_train/(np.linalg.norm(f_train,axis=3,keepdims=True)+1e-9)
-  topic_vec_n = topic_vec/(np.linalg.norm(topic_vec,axis=0,keepdims=True)+1e-9)
-  topic_prob = np.matmul(f_train_n,topic_vec_n)
-  n_size = 7
-  j_int, a, b = {},{},{}
-  for i in range(n_concept):
-      j_int[i], a[i], b[i] = [], [], []
-      ind = np.argpartition(topic_prob[:,:,:,i].flatten(), -10)[-10:]
-      sim_list = topic_prob[:,:,:,i].flatten()[ind]
-      for jc,j in enumerate(ind):
-          j_int[i].append(int(np.floor(j/(n_size*n_size))))
-          a[i].append(int((j-j_int[i][-1]*(n_size*n_size))/n_size))
-          b[i].append(int((j-j_int[i][-1]*(n_size*n_size))%n_size))
-  pickle.dump(a, open(model_dir+"a_{}.pkl".format(seed),"wb"))
-  pickle.dump(b, open(model_dir+"b_{}.pkl".format(seed),"wb"))
-  pickle.dump(j_int, open(model_dir+"j_int_{}.pkl".format(seed),"wb"))
-  collected = gc.collect()
-  print("Garbage collector: collected", "%d objects." % collected) 
+f_train_n = f_train/(np.linalg.norm(f_train,axis=3,keepdims=True)+1e-9)
+topic_vec_n = topic_vec/(np.linalg.norm(topic_vec,axis=0,keepdims=True)+1e-9)
+topic_prob = np.matmul(f_train_n,topic_vec_n)
+n_size = 7
+j_int, a, b = {},{},{}
+for i in range(n_concept):
+    j_int[i], a[i], b[i] = [], [], []
+    ind = np.argpartition(topic_prob[:,:,:,i].flatten(), -10)[-10:]
+    sim_list = topic_prob[:,:,:,i].flatten()[ind]
+    for jc,j in enumerate(ind):
+        j_int[i].append(int(np.floor(j/(n_size*n_size))))
+        a[i].append(int((j-j_int[i][-1]*(n_size*n_size))/n_size))
+        b[i].append(int((j-j_int[i][-1]*(n_size*n_size))%n_size))
+pickle.dump(a, open(model_dir+"a_{}.pkl".format(seed),"wb"))
+pickle.dump(b, open(model_dir+"b_{}.pkl".format(seed),"wb"))
+pickle.dump(j_int, open(model_dir+"j_int_{}.pkl".format(seed),"wb"))
 
