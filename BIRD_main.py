@@ -39,7 +39,7 @@ def makedir(path):
         os.makedirs(path)
 init = keras.initializers.RandomUniform(minval=-0.5, maxval=0.5, seed=None)
 
-def create_org_model(train_generator, val_generator, input_shape=(224, 224, 3),  verbose=True, epochs=10):
+def create_org_model(train_generator, val_generator, input_shape=(224, 224, 3),  verbose=True, epochs=10, load=False):
     """Loads pretrain model or train one."""
     convlayers = ResNet34(input_shape=input_shape, input_tensor=None, weights='imagenet', include_top=False)
     dense1 = Dense(200,activation='softmax')
@@ -53,9 +53,12 @@ def create_org_model(train_generator, val_generator, input_shape=(224, 224, 3), 
     opt=tf.keras.optimizers.Adam(lr=0.0001)
     model.compile(loss='sparse_categorical_crossentropy',metrics=['accuracy'],optimizer=opt)
     
-    history=model.fit_generator(train_generator,validation_data=val_generator,
+    if not load :
+        history=model.fit_generator(train_generator,validation_data=val_generator,
          epochs=epochs, verbose=verbose)
-    model.save_weights(model_dir+'complete_model.h5')
+        model.save_weights(model_dir+'complete_model.h5')
+    else:
+        model.load_weights(model_dir+'complete_model.h5')
     
     for layer in model.layers:
         layer.trainable = False
@@ -73,7 +76,7 @@ def new_train_generator(seed,percentage,df,org_datasetsize,repetition=30):
     np.random.seed(seed)
     indices = np.random.choice(org_datasetsize, size=int(percentage*org_datasetsize), replace=False)
     augmented_indices = indices.repeat(repetition)*repetition+np.tile(np.arange(repetition),len(indices))
-    train_generator =train_datagen.flow_from_dataframe(dataframe=df,
+    train_generator =train_datagen.flow_from_dataframe(dataframe=df.iloc[augmented_indices],
         directory=train_directory,
         x_col="x_col",
         y_col="y_col",
@@ -250,7 +253,7 @@ model_dir = './saved_models/' + base_architecture + '/' + experiment_run + '/'
 makedir(model_dir)
 train_datagen=ImageDataGenerator(rescale=1/255)
 train_generator, indices = new_train_generator(seed,percentage,df,org_datasetsize=len(org_df),repetition=30)
-feature_model, predict_model, model = create_org_model(train_generator,test_generator, epochs=org_epochs)
+feature_model, predict_model, model = create_org_model(train_generator,test_generator, epochs=org_epochs, load = True)
 
 train_predict = model.predict(org_train_generator).argmax(axis=1)
 test_predict = model.predict(test_generator).argmax(axis=1)
@@ -280,9 +283,8 @@ topic_model_pr, optimizer_reset, optimizer, topic_vector,  n_concept, f_input = 
 																		                                verbose=verbose,
 																		                                metric1=['accuracy'],
 																		                                loss1=tf.keras.losses.sparse_categorical_crossentropy,
-																		                                thres=0.2,
-																		                                load=False)
-topic_model_pr.fit(f_train,f_train_y,batch_size=batch_size,epochs=topic_epochs, verbose=verbose)
+																		                                thres=0.2)
+topic_model_pr.fit(f_train,f_train_y,batch_size=150,epochs=topic_epochs, verbose=verbose)
 
 f_train_full = feature_model.predict(org_train_generator)
 f_test_full = feature_model.predict(test_generator)
